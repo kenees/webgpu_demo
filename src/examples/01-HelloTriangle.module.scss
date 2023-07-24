@@ -1,0 +1,10 @@
+.container {
+  width: 100%;
+  height: 100%;
+
+  canvas {
+    display: block; /* 让画布像一个块一样 */
+    width: 100%; /* 让画布充满它的容器 */
+    height: 100%;
+  }
+}

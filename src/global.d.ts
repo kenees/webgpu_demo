@@ -1,0 +1,16 @@
+declare module "*.scss";
+declare module "*.scss";
+declare module "*.png";
+declare module "*.gif";
+declare module "*.jpg";
+declare module "*.jpeg";
+declare module "*.svg";
+declare module "*.css";
+declare module "*.less";
+declare module "*.scss";
+declare module "*.sass";
+declare module "*.style";
+declare module "*.tsx";
+declare module "*.ts";
+declare module "*.jsx";
+declare module "react-router-dom";
