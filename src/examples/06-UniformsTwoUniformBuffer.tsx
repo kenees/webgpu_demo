@@ -1,8 +1,23 @@
 //@ts-nocheck
 // 统一缓冲区
-// WebGPU 通过uniforms 设置单个数据
+// WebGPU 通过多个uniforms 设置多个数据， 每个绘制的东西需要2个缓冲区
 import { useLayoutEffect, useRef } from "react";
 import styles from "./01-HelloTriangle.module.scss";
+
+// [min 和 max) 之间的随机数
+// 如果有 1 个参数，它将是 [0 到 min)
+// 如果没有参数，它将是 [0 到 1)
+const rand = (min, max) => {
+  if (min === undefined) {
+    min = 0;
+    max = 1;
+  } else if (max === undefined) {
+    min = 0;
+    max = min;
+  }
+
+  return min + Math.random() * (max - min);
+};
 
 async function init(ref: any) {
   const canvas = ref.current;
@@ -32,23 +47,27 @@ async function init(ref: any) {
     code: `
         struct OurStruct {
             color: vec4f,
-            scale: vec2f,
             offset: vec2f,
         };
 
+        struct OtherStruct {
+            scale: vec2f,
+        }
+
         @group(0) @binding(0) var<uniform> ourStruct: OurStruct;
+        @group(0) @binding(1) var<uniform> otherStruct: OtherStruct;
         
         @vertex 
         fn vs(
             @builtin(vertex_index) vertexIndex : u32
         ) -> @builtin(position) vec4f {
-            var pos = array(
+            let pos = array(
                 vec2f(0.0, 0.5),
                 vec2f(-0.5, -0.5),
                 vec2f(0.5, -0.5)
             );
            return vec4f(
-            pos[vertexIndex] * ourStruct.scale + ourStruct.offset, 0.0, 1.0
+            pos[vertexIndex] * otherStruct.scale + ourStruct.offset, 0.0, 1.0
            );
         }
 
@@ -81,31 +100,61 @@ async function init(ref: any) {
     },
   });
 
-  // 7. 创建uniform buffer
-  const uniformBufferSize =
+  // 7. 创建一堆 uniform buffer
+  const kNumObjects = 100;
+  const objectInfos = [];
+
+  const staticUniformBufferSize =
     4 * 4 + // 颜色是 4 个 32 位浮点（每个 4 字节）
-    2 * 4 + // 缩放为 2 个 32 位浮点（每个 4 字节）
-    2 * 4; //  偏移量是 2 个 32 位浮点（每个 4 字节）
-  const uniformBuffer = device.createBuffer({
-    size: uniformBufferSize,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  const uniformValues = new Float32Array(uniformBufferSize / 4);
-  uniformValues.set([0, 1, 0, 1], 0); // 设置颜色为 绿色
-  uniformValues.set([-0.5, -0.25], 6); // 设置偏移量
-  // 7.1 创建绑定组， 将缓冲区绑定到@binding(?)
-  const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
-  });
+    2 * 4 + //  偏移量是 2 个 32 位浮点（每个 4 字节）
+    2 * 4; // padding
+
+  const uniformBufferSize = 2 * 4; // 缩放为 2 个 32 位浮点（每个 4 字节）
+
+  for (let i = 0; i < kNumObjects; i++) {
+    const staticUniformBuffer = device.createBuffer({
+      label: `uniforms for obj: ${i}`,
+      size: staticUniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // 只设置一次， 直接设置
+    {
+      const uniformValues = new Float32Array(staticUniformBufferSize / 4);
+      uniformValues.set([rand(), rand(), rand(), 1], 0); // 设置颜色为 随机
+      uniformValues.set([rand(-0.9, 0.9), rand(-0.9, 0.9)], 4); // 设置偏移量
+
+      device.queue.writeBuffer(staticUniformBuffer, 0, uniformValues);
+    }
+
+    // 需要多次设置的
+    // 创建一个类型数组保存js中的值
+    const uniformBuffer = device.createBuffer({
+      label: `changeing uniforms for obj:${i}`,
+      size: uniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const uniformValues = new Float32Array(uniformBufferSize / 4);
+    // 7.1 创建绑定组， 将缓冲区绑定到@binding(?)
+    const bindGroup = device.createBindGroup({
+      label: `bind group for obj: ${i}`,
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: staticUniformBuffer } },
+        { binding: 1, resource: { buffer: uniformBuffer } },
+      ],
+    });
+
+    objectInfos.push({
+      scale: rand(0.2, 0.5),
+      uniformBuffer,
+      uniformValues,
+      bindGroup,
+    });
+  }
 
   const frame = () => {
     // if (!pageState.active) return;
-    // 7.2 设置比例
-    const aspect = canvas.width / canvas.height;
-    uniformValues.set([0.5 / aspect, 0.5], 4);
-    // 7.3 将值从js复制到GPU
-    device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
 
     const commandEncoder = device.createCommandEncoder(); // 1. 创建命令编码器来开始编码命令
     const textureView = context
@@ -127,9 +176,23 @@ async function init(ref: any) {
 
     const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor); //
     passEncoder.setPipeline(pipeline);
-    // 7.4设置绑定组
-    passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.draw(3, 1, 0, 0); // 调用我们的顶点着色器 3 次
+    // 7.2 设置比例
+    const aspect = canvas.width / canvas.height;
+
+    for (const {
+      scale,
+      bindGroup,
+      uniformBuffer,
+      uniformValues,
+    } of objectInfos) {
+      uniformValues.set([scale / aspect, scale], 0);
+      // 7.3 将值从js复制到GPU
+      device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+      // 7.4设置绑定组
+      passEncoder.setBindGroup(0, bindGroup);
+      passEncoder.draw(3, 1, 0, 0); // 调用我们的顶点着色器 3 次
+    }
+
     passEncoder.end();
 
     device.queue.submit([commandEncoder.finish()]);
@@ -165,7 +228,7 @@ export default () => {
 
   return (
     <div className={styles.container}>
-      统一缓冲区
+      通过多个uniforms 设置多个数据， 每个绘制的东西需要2个统一缓冲区
       <canvas ref={ref} width="500" height="500"></canvas>;
     </div>
   );
